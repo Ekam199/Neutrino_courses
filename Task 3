@@ -1,0 +1,100 @@
+import numpy as np
+
+class Source:
+    def __init__(self, Y=10000):
+        self.Y = Y
+
+    def generate_photons(self, E):
+        n = int(self.Y * E)
+        z = np.random.uniform(-1, 1, n)
+        phi = np.random.uniform(0, 2 * np.pi, n)
+        rho = np.sqrt(1 - z**2)
+
+        x = rho * np.cos(phi)
+        y = rho * np.sin(phi)
+
+        return np.column_stack((x, y, z)).astype(np.float32)
+
+
+class Detector:
+    def __init__(self, R=2.0, N=40, r=0.1, a=0.5):
+        self.R = R
+        self.N = N
+        self.r = r
+        self.a = a
+        self.pmts = self.make_pmts()
+
+    def make_pmts(self):
+        points = []
+        angle = np.pi * (np.sqrt(5) - 1)
+
+        for i in range(self.N):
+            y = 1 - 2 * i / (self.N - 1)
+            rho = np.sqrt(1 - y**2)
+            phi = angle * i
+
+            x = rho * np.cos(phi)
+            z = rho * np.sin(phi)
+
+            points.append([x * self.R, y * self.R, z * self.R])
+
+        return np.array(points, dtype=np.float32)
+
+    def find_pmt(self, point):
+        distances = np.linalg.norm(self.pmts - point, axis=1)
+        idx = np.argmin(distances)
+
+        if distances[idx] <= self.r:
+            return idx
+
+        return None
+
+    def sample_photoelectrons(self):
+        return np.random.poisson(self.a)
+
+    def propagate_and_detect(self, source_pos, directions):
+        source_pos = np.asarray(source_pos, dtype=np.float32)
+        counts = np.zeros(self.N, dtype=np.int32)
+
+        b = 2 * np.dot(directions, source_pos)
+        c = np.dot(source_pos, source_pos) - self.R**2
+
+        discriminant = b**2 - 4 * c
+        t = (-b + np.sqrt(np.maximum(discriminant, 0))) / 2
+
+        hits = source_pos + directions * t[:, None]
+
+        for point in hits:
+            idx = self.find_pmt(point)
+
+            if idx is not None:
+                counts[idx] += self.sample_photoelectrons()
+
+        return counts
+
+
+if __name__ == "__main__":
+    R = 2.0
+    N = 40
+    r = 0.1
+    a = 0.5
+    Y = 10000
+    E = 1.0
+
+    source = Source(Y)
+    detector = Detector(R, N, r, a)
+
+    position = [0, 0, 0]
+    directions = source.generate_photons(E)
+
+    signals = detector.propagate_and_detect(position, directions)
+    total_charge = np.sum(signals)
+
+    Q_theory = a * Y * N * r**2 / (4 * R**2)
+    Q_task = a * Y * N * r**2 / R**2
+
+    print("Энергия источника:", E, "МэВ")
+    print("Количество фотонов:", len(directions))
+    print("Собранный заряд:", total_charge)
+    print("Заряд по формуле из условия:", Q_task)
+    print("Заряд с учетом площади сферы:", Q_theory)
