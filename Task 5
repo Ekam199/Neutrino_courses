@@ -1,0 +1,55 @@
+import numpy as np
+
+class SmartSource:
+    def __init__(self, Y=10000):
+        self.Y = Y
+
+    def generate_photons_generator(self, E, chunk_size=100):
+        mean_photons = E * self.Y
+        total_photons = np.random.poisson(lam=mean_photons)
+
+        photons_generated = 0
+
+        while photons_generated < total_photons:
+            current_chunk = min(chunk_size, total_photons - photons_generated)
+            z = np.random.uniform(-1.0, 1.0, size=current_chunk)
+            phi = np.random.uniform(0.0, 2 * np.pi, size=current_chunk)
+            sin_theta = np.sqrt(1.0 - z**2)
+
+            x = sin_theta * np.cos(phi)
+            y = sin_theta * np.sin(phi)
+
+            chunk_directions = np.stack([x, y, z], axis=1).astype(np.float32)
+
+            photons_generated += current_chunk
+
+            yield chunk_directions
+
+if __name__ == "__main__":
+    smart_source = SmartSource(Y=10000)
+    energy_event = 0.15
+
+    print(f"Энергия события: {energy_event} МэВ")
+    print(f"Ожидаемое среднее число фотонов (E * Y): {energy_event * smart_source.Y:.0f}\n")
+
+    photon_stream = smart_source.generate_photons_generator(E=energy_event, chunk_size=100)
+
+    print("--- Начало полной итерации по генератору ---")
+
+    total_simulated = 0
+    chunk_counter = 0
+
+    for chunk in photon_stream:
+        chunk_counter += 1
+        total_simulated += len(chunk)
+
+        print(f"Порция №{chunk_counter:<2} | Получено фотонов: {len(chunk):<3} | Текущая сумма: {total_simulated:<4} фотонов")
+
+        if chunk_counter == 1:
+            print(f"   [Форма массива: {chunk.shape} | Первый вектор порции: x={chunk[0][0]:.4f}, y={chunk[0][1]:.4f}, z={chunk[0][2]:.4f}]")
+
+    print("--- Генератор успешно завершил работу ---\n")
+
+    print(f"Итоговый результат:")
+    print(f"- Всего выдано порций: {chunk_counter}")
+    print(f"- Суммарное пуассоновское количество сгенерированных фотонов: {total_simulated}")
