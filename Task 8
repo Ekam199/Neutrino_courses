@@ -1,0 +1,161 @@
+import numpy as np
+import time
+from scipy.spatial import KDTree
+
+
+class LargeDetector:
+    def __init__(self, R=15.0, N=2000, r=0.1, a=0.5):
+        self.R = R
+        self.N = N
+        self.r = r
+        self.a = a
+
+        self.pmt_coordinates = self._generate_uniform_pmts()
+        self.spatial_index = KDTree(self.pmt_coordinates)
+
+    def _generate_uniform_pmts(self):
+        points = []
+        phi = np.pi * (5.0**0.5 - 1.0)
+
+        for i in range(self.N):
+            y = 1 - (i / float(self.N - 1)) * 2
+            radius_at_y = np.sqrt(1 - y * y)
+            theta = phi * i
+
+            x = np.cos(theta) * radius_at_y
+            z = np.sin(theta) * radius_at_y
+
+            points.append([
+                x * self.R,
+                y * self.R,
+                z * self.R
+            ])
+
+        return np.array(points, dtype=np.float32)
+
+    def find_pmt_with_kdtree(self, hit_points):
+        distances, indices = self.spatial_index.query(hit_points, k=1)
+        return np.where(distances <= self.r, indices, -1)
+
+    def find_pmt_with_full_scan(self, hit_points, batch_size=5000):
+        pmt_indices = np.empty(len(hit_points), dtype=np.int32)
+
+        for start in range(0, len(hit_points), batch_size):
+            end = min(start + batch_size, len(hit_points))
+            batch = hit_points[start:end]
+
+            diff = (
+                batch[:, np.newaxis, :]
+                - self.pmt_coordinates[np.newaxis, :, :]
+            )
+
+            distances = np.linalg.norm(diff, axis=2)
+
+            min_indices = np.argmin(distances, axis=1)
+            min_distances = distances[
+                np.arange(len(batch)), min_indices
+            ]
+
+            pmt_indices[start:end] = np.where(
+                min_distances <= self.r,
+                min_indices,
+                -1
+            )
+
+        return pmt_indices
+
+    def calculate_hit_points(self, source_pos, directions):
+        source_pos = np.array(source_pos, dtype=np.float32)
+
+        b = 2.0 * np.dot(directions, source_pos)
+        c = np.sum(source_pos**2) - self.R**2
+
+        t = (-b + np.sqrt(b**2 - 4.0 * c)) / 2.0
+
+        return source_pos + directions * t[:, np.newaxis]
+
+    def simulate_event(self, pmt_indices):
+        valid_hits = pmt_indices[pmt_indices != -1]
+
+        photoelectrons = np.random.poisson(
+            lam=self.a,
+            size=len(valid_hits)
+        )
+
+        return int(np.sum(photoelectrons))
+
+
+if __name__ == "__main__":
+
+    detector = LargeDetector(
+        R=15.0,
+        N=2000,
+        r=0.1,
+        a=0.5
+    )
+
+    E_event = 10.0
+    n_photons = int(E_event * 10000)
+
+    z = np.random.uniform(-1.0, 1.0, size=n_photons)
+    phi = np.random.uniform(0.0, 2 * np.pi, size=n_photons)
+
+    sin_theta = np.sqrt(1.0 - z**2)
+
+    directions = np.stack([
+        sin_theta * np.cos(phi),
+        sin_theta * np.sin(phi),
+        z
+    ], axis=1).astype(np.float32)
+
+    source_position = [2.0, -3.0, 5.0]
+
+    print("--- Параметры макро-детектора ---")
+    print(
+        f"Радиус сферы: {detector.R} м | "
+        f"Кол-во ФЭУ: {detector.N} | "
+        f"Радиус ФЭУ: {detector.r} м"
+    )
+    print(
+        f"Тестовое событие: {E_event} МэВ "
+        f"({n_photons} испущенных фотонов)\n"
+    )
+
+    hit_points = detector.calculate_hit_points(
+        source_position,
+        directions
+    )
+
+    t0 = time.perf_counter()
+    hits_full = detector.find_pmt_with_full_scan(hit_points)
+    time_full = time.perf_counter() - t0
+
+    print("[Метод полного перебора]")
+    print(f"  Время поиска: {time_full:.4f} сек.")
+    print(f"  Количество попаданий: {np.sum(hits_full != -1)}")
+
+    t0 = time.perf_counter()
+    hits_kd = detector.find_pmt_with_kdtree(hit_points)
+    time_kd = time.perf_counter() - t0
+
+    print("\n[Метод пространственного дерева (KD-Tree)]")
+    print(f"  Время поиска: {time_kd:.4f} сек.")
+    print(f"  Количество попаданий: {np.sum(hits_kd != -1)}")
+
+    identical = np.array_equal(hits_full, hits_kd)
+
+    print("\n--- Проверка корректности ---")
+    print(f"Идентичность результатов поиска: {identical}")
+
+    if identical:
+        charge = detector.simulate_event(hits_kd)
+        print(f"Собранный заряд: {charge} ф.э.")
+    else:
+        print("Ошибка: алгоритмы поиска дали разные результаты!")
+
+    speedup = time_full / time_kd if time_kd > 0 else float('inf')
+
+    print("\n--- Результаты оптимизации Задачи 8 ---")
+    print(f"Время полного перебора: {time_full:.4f} сек.")
+    print(f"Время KD-Tree: {time_kd:.4f} сек.")
+    print(f"Ускорение алгоритма: {speedup:.1f} раз")
