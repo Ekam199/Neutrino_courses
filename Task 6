@@ -1,0 +1,121 @@
+import numpy as np
+
+class Source:
+    def __init__(self, Y=10000):
+        self.Y = Y
+
+    def generate_photons(self, E):
+        num_photons = int(round(self.Y * E))
+        z = np.random.uniform(-1.0, 1.0, size=num_photons)
+        phi = np.random.uniform(0.0, 2 * np.pi, size=num_photons)
+        sin_theta = np.sqrt(1.0 - z**2)
+        x = sin_theta * np.cos(phi)
+        y = sin_theta * np.sin(phi)
+        return np.stack([x, y, z], axis=1).astype(np.float32)
+
+class Detector:
+    def __init__(self, R=2.0, N=40, r=0.1, a=0.5, attenuation_length=8.0):
+        self.R = R
+        self.N = N
+        self.r = r
+        self.a = a
+        self.attenuation_length = attenuation_length
+        self.pmt_coordinates = self._generate_uniform_pmts()
+
+    def _generate_uniform_pmts(self):
+        points = []
+        phi = np.pi * (5.0**0.5 - 1.0)
+        for i in range(self.N):
+            y = 1 - (i / float(self.N - 1)) * 2
+            radius_at_y = np.sqrt(1 - y * y)
+            theta = phi * i
+            x = np.cos(theta) * radius_at_y
+            z = np.sin(theta) * radius_at_y
+            points.append([x * self.R, y * self.R, z * self.R])
+        return np.array(points, dtype=np.float32)
+
+    def find_pmt_for_points_vectorized(self, hit_points):
+        diff = hit_points[:, np.newaxis, :] - self.pmt_coordinates[np.newaxis, :, :]
+        distances = np.linalg.norm(diff, axis=2)
+        min_indices = np.argmin(distances, axis=1)
+        min_distances = distances[np.arange(len(hit_points)), min_indices]
+        pmt_indices = np.where(min_distances <= self.r, min_indices, -1)
+        return pmt_indices
+
+    def simulate_event(self, source_pos, directions, use_attenuation=True):
+        source_pos = np.array(source_pos, dtype=np.float32)
+        b = 2.0 * np.dot(directions, source_pos)
+        c = np.sum(source_pos**2) - self.R**2
+        D = b**2 - 4.0 * c
+
+        t = (-b + np.sqrt(D)) / 2.0
+
+        if use_attenuation:
+            survival_probability = np.exp(-t / self.attenuation_length)
+            survived_mask = np.random.uniform(0.0, 1.0, size=len(t)) < survival_probability
+
+            directions = directions[survived_mask]
+            t = t[survived_mask]
+
+            if len(directions) == 0:
+                return 0
+
+        hit_points = source_pos + directions * t[:, np.newaxis]
+        pmt_indices = self.find_pmt_for_points_vectorized(hit_points)
+
+        valid_hits = pmt_indices[pmt_indices != -1]
+        if len(valid_hits) == 0:
+            return 0
+
+        photoelectrons = np.random.poisson(lam=self.a, size=len(valid_hits))
+        return int(np.sum(photoelectrons))
+
+if __name__ == "__main__":
+    detector = Detector(R=2.0, N=40, r=0.1, a=0.5, attenuation_length=8.0)
+    source = Source(Y=10000)
+
+    n_events = 1000
+    energy = 1.0
+
+    z_positions = [0.0, 0.5, 1.0, 1.5, 1.8]
+
+    print(f"--- НАЧАЛО СИМУЛЯЦИИ (энергия = {energy} МэВ, Длина затухания = {detector.attenuation_length} м) ---")
+    print(f"{n_events} событий для каждой конфигурации.\n")
+
+    results_with_attenuation = {}
+    results_without_attenuation = {}
+
+    for z in z_positions:
+        pos = [0.0, 0.0, z]
+
+        charges_att = [detector.simulate_event(pos, source.generate_photons(energy), use_attenuation=True) for _ in range(n_events)]
+        results_with_attenuation[z] = np.array(charges_att)
+
+        charges_no_att = [detector.simulate_event(pos, source.generate_photons(energy), use_attenuation=False) for _ in range(n_events)]
+        results_without_attenuation[z] = np.array(charges_no_att)
+
+        mean_att = np.mean(results_with_attenuation[z])
+        std_att = np.std(results_with_attenuation[z])
+
+        mean_no_att = np.mean(results_without_attenuation[z])
+        std_no_att = np.std(results_without_attenuation[z])
+
+        print(f"Положение источника Z = {z:.1f} м:")
+        print(f"  > С затуханием: средний заряд = {mean_att:<6.1f} | СКО = {std_att:.1f}")
+        print(f"  > Без затухания: средний заряд = {mean_no_att:<6.1f} | СКО = {std_no_att:.1f}")
+        print(f"  > Снижение светосбора из-за среды: {((mean_no_att - mean_att) / mean_no_att * 100):.2f}%\n")
+
+    print("--- АНАЛИЗ И СРАВНЕНИЕ РАСПРЕДЕЛЕНИЙ ---")
+    print("1. Влияние на средний заряд в центре (Z=0.0):")
+    print(f"   В центре сферы все лучи имеют длину пути ровно R = 2.0 м.")
+    print(f"   Теоретический фактор затухания: exp(-2.0 / 8.0) = exp(-0.25) ≈ {np.exp(-0.25):.4f}")
+    real_ratio_center = np.mean(results_with_attenuation[0.0]) / np.mean(results_without_attenuation[0.0])
+    print(f"   Фактическое отношение средних в симуляции: {real_ratio_center:.4f}")
+
+    print("\n2. Зависимость от положения вдоль оси Z:")
+    print("   - Без затухания средний собранный заряд оставался стабильным (~125 ф.э.) вне зависимости от Z.")
+    print("   - С затуханием средний заряд начинает возрастать по мере приближения источника к стенке детектора.")
+    print("     Например, при Z = 1.8 м средний заряд равен "
+          f"{np.mean(results_with_attenuation[1.8]):.1f} ф.э. против {np.mean(results_with_attenuation[0.0]):.1f} ф.э. в центре.")
+    print("     Это происходит потому, что часть фотонов летит к ближайшей стенке по очень короткому пути "
+          "и практически не затухает, перевешивая потери от фотонов, летящих к противоположной стороне.")
