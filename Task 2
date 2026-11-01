@@ -1,0 +1,47 @@
+import numpy as np
+
+class Source:
+    def __init__(self, Y=10000, seed=None):
+        self.Y = Y
+        self.rng = np.random.default_rng(seed)
+
+    def generate_photons(self, E):
+        num_photons = int(round(self.Y * E))
+
+        if num_photons == 0:
+            return np.empty((0, 3), dtype=np.float32)
+
+        z = self.rng.uniform(-1.0, 1.0, size=num_photons)
+        phi = self.rng.uniform(0.0, 2.0 * np.pi, size=num_photons)
+
+        sin_theta = np.sqrt(1.0 - z**2)
+
+        x = sin_theta * np.cos(phi)
+        y = sin_theta * np.sin(phi)
+
+        directions = np.column_stack((x, y, z))
+
+        return directions.astype(np.float32)
+
+
+if __name__ == "__main__":
+    source = Source(Y=10000, seed=42)
+
+    E = 0.5
+    directions = source.generate_photons(E)
+
+    print(f"Энергия события: {E} МэВ")
+    print(f"Количество фотонов: {len(directions)}")
+    print("Первые 5 направлений:")
+    print(directions[:5])
+
+    if len(directions) > 0:
+        lengths = np.linalg.norm(directions, axis=1)
+
+        print("Длины первых 5 векторов:")
+        print(lengths[:5])
+
+        print(
+            "Максимальное отклонение длины от 1:",
+            np.max(np.abs(lengths - 1.0))
+        )
